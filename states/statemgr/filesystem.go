@@ -62,6 +62,7 @@ type Filesystem struct {
 var (
 	_ Full           = (*Filesystem)(nil)
 	_ PersistentMeta = (*Filesystem)(nil)
+	_ Migrator       = (*Filesystem)(nil)
 )
 
 // NewFilesystem creates a filesystem-based state manager that reads and writes
@@ -121,9 +122,6 @@ func (s *Filesystem) State() *states.State {
 
 // WriteState is an incorrect implementation of Writer that actually also
 // persists.
-// WriteState for LocalState always persists the state as well.
-//
-// StateWriter impl.
 func (s *Filesystem) WriteState(state *states.State) error {
 	// TODO: this should use a more robust method of writing state, by first
 	// writing to a temp file on the same filesystem, and renaming the file over
@@ -343,6 +341,27 @@ func (s *Filesystem) StateSnapshotMeta() SnapshotMeta {
 
 		TerraformVersion: s.file.TerraformVersion,
 	}
+}
+
+// StateForMigration is part of our implementation of Migrator.
+func (s *Filesystem) StateForMigration() *statefile.File {
+	return s.file.DeepCopy()
+}
+
+// WriteStateForMigration is part of our implementation of Migrator.
+func (s *Filesystem) WriteStateForMigration(f *statefile.File) error {
+	// We'll just wrap our WriteState here, since its logic is reasonably
+	// complex.
+	err := s.WriteState(f.State)
+	if err != nil {
+		return err
+	}
+
+	// ...but if we succeeded then we'll update our metadata to match
+	// what's in the given file.
+	s.file.Lineage = f.Lineage
+	s.file.Serial = f.Serial
+	return nil
 }
 
 // Open the state file, creating the directories and file as needed.
