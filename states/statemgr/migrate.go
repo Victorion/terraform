@@ -133,3 +133,85 @@ func Export(mgr Reader) *statefile.File {
 		return statefile.New(s, "", 0)
 	}
 }
+
+// SnapshotMetaRel describes a relationship between two SnapshotMeta values,
+// returned from the SnapshotMeta.Compare method where the "first" value
+// is the receiver of that method and the "second" is the given argument.
+type SnapshotMetaRel rune
+
+//go:generate stringer -type=SnapshotMetaRel
+
+const (
+	// SnapshotOlder indicates that two snapshots have a common lineage and
+	// that the first has a lower serial value.
+	SnapshotOlder SnapshotMetaRel = '<'
+
+	// SnapshotNewer indicates that two snapshots have a common lineage and
+	// that the first has a higher serial value.
+	SnapshotNewer SnapshotMetaRel = '>'
+
+	// SnapshotEqual indicates that two snapshots have a common lineage and
+	// the same serial value.
+	SnapshotEqual SnapshotMetaRel = '='
+
+	// SnapshotUnrelated indicates that two snapshots have different lineage
+	// and thus cannot be meaningfully compared.
+	SnapshotUnrelated SnapshotMetaRel = '!'
+
+	// SnapshotLegacy indicates that one or both of the snapshots
+	// does not have a lineage at all, and thus no comparison is possible.
+	SnapshotLegacy SnapshotMetaRel = '?'
+)
+
+// Compare determines the relationship, if any, between the given existing
+// SnapshotMeta and the potential "new" SnapshotMeta that is the receiver.
+func (m SnapshotMeta) Compare(existing SnapshotMeta) SnapshotMetaRel {
+	switch {
+	case m.Lineage == "" || existing.Lineage == "":
+		return SnapshotLegacy
+	case m.Lineage != existing.Lineage:
+		return SnapshotUnrelated
+	case m.Serial > existing.Serial:
+		return SnapshotNewer
+	case m.Serial < existing.Serial:
+		return SnapshotOlder
+	default:
+		// both serials are equal, by elimination
+		return SnapshotEqual
+	}
+}
+
+// CheckValidImport returns nil if the "new" snapshot can be imported as a
+// successor of the "existing" snapshot without forcing.
+//
+// If not, an error is returned describing why.
+func CheckValidImport(newFile, existingFile *statefile.File) error {
+	new := SnapshotMeta{
+		Lineage: newFile.Lineage,
+		Serial:  newFile.Serial,
+	}
+	existing := SnapshotMeta{
+		Lineage: existingFile.Lineage,
+		Serial:  existingFile.Serial,
+	}
+	rel := new.Compare(existing)
+	switch rel {
+	case SnapshotNewer:
+		return nil // a newer snapshot is fine
+	case SnapshotLegacy:
+		return nil // anything goes for a legacy state
+	case SnapshotUnrelated:
+		return fmt.Errorf("cannot import state with lineage %q over unrelated state with lineage %q", new.Lineage, existing.Lineage)
+	case SnapshotEqual:
+		if statefile.StatesMarshalEqual(newFile.State, existingFile.State) {
+			// If lineage, serial, and state all match then this is fine.
+			return nil
+		}
+		return fmt.Errorf("cannot overwrite existing state with serial %d with a different state that has the same serial", new.Serial)
+	case SnapshotOlder:
+		return fmt.Errorf("cannot import state with serial %d over newer state with serial %d", new.Serial, existing.Serial)
+	default:
+		// Should never happen, but we'll check to make sure for safety
+		return fmt.Errorf("unsupported state snapshot relationship %s", rel)
+	}
+}

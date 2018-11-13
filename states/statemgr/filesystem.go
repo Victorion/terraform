@@ -135,7 +135,10 @@ func (s *Filesystem) WriteState(state *states.State) error {
 	}
 
 	defer s.mutex()()
+	return s.writeState(state)
+}
 
+func (s *Filesystem) writeState(state *states.State) error {
 	// We'll try to write our backup first, so we can be sure we've created
 	// it successfully before clobbering the original file it came from.
 	if !s.writtenBackup && s.backupFile != nil && s.backupPath != "" && !statefile.StatesMarshalEqual(state, s.backupFile.State) {
@@ -350,15 +353,21 @@ func (s *Filesystem) StateForMigration() *statefile.File {
 
 // WriteStateForMigration is part of our implementation of Migrator.
 func (s *Filesystem) WriteStateForMigration(f *statefile.File) error {
-	// We'll just wrap our WriteState here, since its logic is reasonably
-	// complex.
-	err := s.WriteState(f.State)
+	if s.readFile == nil {
+		err := s.RefreshState()
+		if err != nil {
+			return err
+		}
+	}
+	defer s.mutex()()
+
+	err := s.writeState(f.State)
 	if err != nil {
 		return err
 	}
 
-	// ...but if we succeeded then we'll update our metadata to match
-	// what's in the given file.
+	// If we succeeded then we'll update our metadata to match what's in the
+	// given file.
 	s.file.Lineage = f.Lineage
 	s.file.Serial = f.Serial
 	return nil
